@@ -1,6 +1,7 @@
 import re
 import pandas as pd
 import streamlit as st
+import altair as alt
 from io import BytesIO
 
 # -----------------------------
@@ -169,7 +170,7 @@ for _, row in final_df.iterrows():
     if "Red → Green" in change or "Yellow → Green" in change:
         success_modules.append(f"{module} (status improved, Validation ↑, NBL {nbl_share_wafter})")
     elif "Green → Red" in change or "Green → Yellow" in change or "Yellow → Red" in change:
-        attention_modules.append(f"{module} (status worsened, NBL {nbl_share_wafter}, Validation {val_pct_wafter})")
+        attention_modules.append(f"{module} (status regressed, NBL {nbl_share_wafter}, Validation {val_pct_wafter})")
 
 summary_lines.append("Summary & Recommendations")
 summary_lines.append("• Success Highlights:")
@@ -281,3 +282,49 @@ st.text(summary_text)
 
 st.subheader("Key Changes")
 st.dataframe(key_changes_df)
+
+# -----------------------------
+# 📊 Visual Insights with Altair
+# -----------------------------
+st.header("📊 Visual Insights")
+
+# 1. Status Distribution
+status_counts_df = pd.DataFrame({
+    "Week": ["Week "+str(week_before)] * len(week_before_df[f"STATUS_W{week_before}"].value_counts()) +
+            ["Week "+str(week_after)] * len(week_after_df[f"STATUS_W{week_after}"].value_counts()),
+    "Status": list(week_before_df[f"STATUS_W{week_before}"].value_counts().index) +
+              list(week_after_df[f"STATUS_W{week_after}"].value_counts().index),
+    "Count": list(week_before_df[f"STATUS_W{week_before}"].value_counts().values) +
+             list(week_after_df[f"STATUS_W{week_after}"].value_counts().values)
+})
+
+status_chart = alt.Chart(status_counts_df).mark_bar().encode(
+    x="Week:N",
+    y="Count:Q",
+    color="Status:N",
+    column="Status:N"
+).properties(title="Status Distribution (Before vs After)")
+
+st.altair_chart(status_chart, use_container_width=True)
+
+# 2. Validation % Movement Scatter
+val_chart = alt.Chart(final_df).mark_circle(size=80).encode(
+    x=f"VAL_PCT (W{week_before}):Q",
+    y=f"VAL_PCT (W{week_after}):Q",
+    tooltip=["OMNI_MODULE", f"VAL_PCT (W{week_before})", f"VAL_PCT (W{week_after})", "CHANGES"],
+    color="CHANGES:N"
+).properties(title="Validation % Movement per Module")
+
+line = alt.Chart(pd.DataFrame({'x':[0,100], 'y':[0,100]})).mark_line(strokeDash=[5,5]).encode(x="x", y="y")
+st.altair_chart(val_chart + line, use_container_width=True)
+
+# 3. NBL Share Change for Changed Modules
+key_changes_df["NBL_CHANGE"] = pd.to_numeric(key_changes_df["NBL_SHARE"].str.replace("%",""), errors="coerce")
+changes_chart = alt.Chart(key_changes_df).mark_bar().encode(
+    x="OMNI_MODULE:N",
+    y="NBL_CHANGE:Q",
+    color="STATUS CHANGE:N",
+    tooltip=["OMNI_MODULE", "STATUS CHANGE", "VAL_PCT", "VAL_SALES", "NBL_SHARE", "KEY INSIGHTS"]
+).properties(title="Key Module Changes (NBL Share Δ)")
+
+st.altair_chart(changes_chart, use_container_width=True)
