@@ -73,6 +73,16 @@ def color_status_change(val):
         return color_status(last_status)
     return ""
 
+def safe_pct_diff(before, after):
+    if pd.isna(before) or pd.isna(after):
+        return None
+    if before == 0:
+        if after == 0:
+            return 0
+        else:
+            return float("inf")
+    return ((after - before) / before) * 100
+
 # -----------------------------
 # Process Uploaded Files
 # -----------------------------
@@ -80,7 +90,21 @@ weeks = {}
 for file in week_files:
     week_num = extract_week_number(file.name)
     if week_num:
-        weeks[week_num] = pd.read_csv(file)
+        df_temp = pd.read_csv(file)
+
+        # --- Clean numeric columns (important for Streamlit Cloud) ---
+        for c in df_temp.columns:
+            if df_temp[c].dtype == "object":
+                df_temp[c] = (
+                    df_temp[c]
+                    .astype(str)
+                    .str.replace("%", "", regex=False)
+                    .str.replace(",", "", regex=False)
+                    .str.strip()
+                )
+                df_temp[c] = pd.to_numeric(df_temp[c], errors="ignore")
+
+        weeks[week_num] = df_temp
 
 sorted_weeks = sorted(weeks.keys())
 week_before, week_after = sorted_weeks[0], sorted_weeks[1]
@@ -98,7 +122,7 @@ df["CHANGES"] = df.apply(
     axis=1
 )
 
-# --- handle numeric + formatted columns separately
+# --- handle numeric + formatted columns ---
 pct_cols = [
     f"VAL_PCT_W{week_before}",
     f"VAL_PCT_W{week_after}",
@@ -109,7 +133,10 @@ pct_cols = [
 ]
 
 for col in pct_cols:
-    df[col + "_num"] = pd.to_numeric(df[col], errors="coerce") * 100
+    df[col + "_num"] = pd.to_numeric(df[col], errors="coerce")
+    # Scale only if values are proportions (≤1)
+    if df[col + "_num"].max(skipna=True) <= 1:
+        df[col + "_num"] = df[col + "_num"] * 100
     df[col] = df[col + "_num"].round(0).apply(lambda x: f"{int(x)}%" if pd.notna(x) else "N/A")
 
 final_df = df[
@@ -139,17 +166,25 @@ final_df = final_df.rename(
 
 comparison_df = final_df[final_df["CHANGES"] != "No Change"].reset_index(drop=True)
 
-# NBL share % diff
+# --- NBL share % diff ---
 nbl_share_before = df[f"NBL_SHARE_W{week_before}_num"]
 nbl_share_after = df[f"NBL_SHARE_W{week_after}_num"]
-diff = ((nbl_share_after - nbl_share_before) / nbl_share_before.replace(0, pd.NA)) * 100
-final_df["NBL_Share_Pct"] = diff.round(0).apply(lambda x: f"{int(x)}%" if pd.notna(x) else "N/A")
+diff = [safe_pct_diff(b, a) for b, a in zip(nbl_share_before, nbl_share_after)]
+final_df["NBL_Share_Pct"] = [
+    "∞%" if x == float("inf") else (f"{int(round(x))}%" if pd.notna(x) else "N/A")
+    for x in diff
+]
 
 # -----------------------------
 # Meta Data Updates
 # -----------------------------
 meta_df = pd.read_excel(meta_file)
 status_counts = week_after_df[f"STATUS_W{week_after}"].value_counts().to_dict()
+
+# Add new week column if missing
+if f"Week {week_after}" not in meta_df.columns:
+    meta_df[f"Week {week_after}"] = 0
+
 meta_df[f"Week {week_after}"] = meta_df["OMNI_MODULE"].map(status_counts).fillna(0).astype(int)
 
 week_cols = [c for c in meta_df.columns if c.startswith("Week ")]
